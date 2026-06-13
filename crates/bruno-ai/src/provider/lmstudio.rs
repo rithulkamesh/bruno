@@ -31,16 +31,8 @@ impl LMStudioProvider {
             cfg,
         }
     }
-}
 
-#[async_trait]
-impl Provider for LMStudioProvider {
-    async fn chat_stream(
-        &self,
-        system: &str,
-        messages: &[Message],
-        on_delta: &mut (dyn FnMut(String) + Send),
-    ) -> Result<String, AiError> {
+    fn headers(&self) -> Result<HeaderMap, AiError> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
         if !self.cfg.api_key.is_empty() {
@@ -51,17 +43,43 @@ impl Provider for LMStudioProvider {
                     .map_err(|_| AiError::Config("invalid lmstudio.api_key".into()))?,
             );
         }
+        Ok(headers)
+    }
 
+    fn url(&self) -> String {
+        format!("{}/chat/completions", self.cfg.base_url.trim_end_matches('/'))
+    }
+}
+
+#[async_trait]
+impl Provider for LMStudioProvider {
+    async fn chat_stream(
+        &self,
+        system: &str,
+        messages: &[Message],
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<String, AiError> {
         // An empty model lets LM Studio use its currently loaded model.
-        let url = format!("{}/chat/completions", self.cfg.base_url.trim_end_matches('/'));
         openai::stream_completions(
             &self.client,
-            &url,
-            headers,
+            &self.url(),
+            self.headers()?,
             &self.cfg.model,
             system,
             messages,
             on_delta,
+        )
+        .await
+    }
+
+    async fn complete(&self, system: &str, messages: &[Message]) -> Result<String, AiError> {
+        openai::complete_completions(
+            &self.client,
+            &self.url(),
+            self.headers()?,
+            &self.cfg.model,
+            system,
+            messages,
         )
         .await
     }

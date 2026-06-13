@@ -14,6 +14,7 @@ pub struct OrbGeometry {
 pub enum HudCommand {
     Show,
     Hide,
+    #[allow(dead_code)]
     Toggle,
     SetText(String),
     SetPulsing(bool),

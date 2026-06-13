@@ -57,6 +57,9 @@ impl WhisperEngine {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
+        // Non-speech annotations like "(clapping)" / "[keyboard clicking]" that
+        // whisper emits on noise (e.g. typing) are stripped from the output
+        // below via strip_annotations().
         let threads = std::thread::available_parallelism()
             .map(|n| n.get() as i32)
             .unwrap_or(4);
@@ -74,8 +77,34 @@ impl WhisperEngine {
                 out.push_str(&seg);
             }
         }
-        Some(out)
+        // Belt-and-suspenders: drop any residual bracketed/parenthesised
+        // sound annotations whisper still slips through on noise.
+        let cleaned = strip_annotations(&out);
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() {
+            return None;
+        }
+        Some(cleaned.to_string())
     }
+}
+
+/// Remove `(...)` and `[...]` groups (whisper's non-speech annotations) and
+/// collapse the surrounding whitespace.
+fn strip_annotations(s: &str) -> String {
+    let mut out = String::new();
+    let mut paren = 0i32;
+    let mut brack = 0i32;
+    for c in s.chars() {
+        match c {
+            '(' => paren += 1,
+            ')' => paren = (paren - 1).max(0),
+            '[' => brack += 1,
+            ']' => brack = (brack - 1).max(0),
+            _ if paren == 0 && brack == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn resolve_model_path(cfg: &WhisperConfig) -> Result<PathBuf, String> {

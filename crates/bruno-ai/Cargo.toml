@@ -3,7 +3,7 @@ name = "bruno-ai"
 version = "0.1.0"
 edition = "2024"
 description = "Bruno AI/agent layer: multi-provider LLM inference (Ollama, OpenAI, Claude, Azure Foundry)"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 async-trait = "0.1"
@@ -18,3 +18,4 @@ dirs = "6"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = "0.3"
+base64 = "0.22"

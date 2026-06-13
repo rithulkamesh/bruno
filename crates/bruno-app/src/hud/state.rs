@@ -27,7 +27,7 @@ mod native {
             let content = window
                 .contentView()
                 .expect("orb window must have a content view");
-            let bounds = unsafe { content.bounds() };
+            let bounds = content.bounds();
             let frame = NSRect::new(
                 NSPoint::new(
                     (bounds.size.width - LABEL_W) * 0.5,
@@ -37,28 +37,26 @@ mod native {
             );
 
             let label = NSTextField::new(mtm);
-            unsafe {
-                label.setFrame(frame);
-                label.setEditable(false);
-                label.setSelectable(false);
-                label.setBezeled(false);
-                label.setDrawsBackground(true);
-                label.setBackgroundColor(Some(&NSColor::colorWithCalibratedWhite_alpha(
-                    0.08, 0.92,
-                )));
-                label.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
-                    0.89, 0.85, 0.95, 1.0,
-                )));
-                label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
-                label.setStringValue(&NSString::from_str(""));
-                label.setHidden(true);
-                content.addSubview(&label);
-            }
+            label.setFrame(frame);
+            label.setEditable(false);
+            label.setSelectable(false);
+            label.setBezeled(false);
+            label.setDrawsBackground(true);
+            label.setBackgroundColor(Some(&NSColor::colorWithCalibratedWhite_alpha(
+                0.08, 0.92,
+            )));
+            label.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
+                0.89, 0.85, 0.95, 1.0,
+            )));
+            label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+            label.setStringValue(&NSString::from_str(""));
+            label.setHidden(true);
+            content.addSubview(&label);
             Self { label }
         }
 
         pub fn relayout(&self, content: &NSView) {
-            let bounds = unsafe { content.bounds() };
+            let bounds = content.bounds();
             let frame = NSRect::new(
                 NSPoint::new(
                     (bounds.size.width - LABEL_W) * 0.5,
@@ -66,27 +64,19 @@ mod native {
                 ),
                 NSSize::new(LABEL_W, LABEL_H),
             );
-            unsafe {
-                self.label.setFrame(frame);
-            }
+            self.label.setFrame(frame);
         }
 
         pub fn set_text(&self, text: &str) {
-            unsafe {
-                self.label.setStringValue(&NSString::from_str(text));
-            }
+            self.label.setStringValue(&NSString::from_str(text));
         }
 
         pub fn show(&self) {
-            unsafe {
-                self.label.setHidden(false);
-            }
+            self.label.setHidden(false);
         }
 
         pub fn hide(&self) {
-            unsafe {
-                self.label.setHidden(true);
-            }
+            self.label.setHidden(true);
         }
     }
 }
@@ -108,6 +98,7 @@ impl HudState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_ready(&self) -> bool {
         #[cfg(target_os = "macos")]
         {

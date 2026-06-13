@@ -32,6 +32,10 @@ pub trait Provider: Send + Sync {
         on_delta: &mut (dyn FnMut(String) + Send),
     ) -> Result<String, AiError>;
 
+    /// Non-streaming completion. Returns the full assistant text. Supports image
+    /// attachments on messages (for vision models).
+    async fn complete(&self, system: &str, messages: &[Message]) -> Result<String, AiError>;
+
     /// Cheap reachability/credential check used to decide whether to attempt a chat.
     async fn is_available(&self) -> bool;
 }

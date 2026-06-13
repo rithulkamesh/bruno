@@ -1,8 +1,7 @@
-//! Azure AI Foundry streaming client.
+//! Azure AI Foundry client (streaming + non-streaming, with vision).
 //!
 //! Foundry serves the OpenAI Chat Completions wire format, so this reuses
-//! [`super::openai::stream_completions`]; only the URL shape and the `api-key`
-//! auth header differ.
+//! [`super::openai`]; only the URL shape and the `api-key` auth header differ.
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, CONTENT_TYPE};
@@ -36,6 +35,38 @@ impl AzureProvider {
             && !self.cfg.api_key.is_empty()
             && !self.cfg.deployment.is_empty()
     }
+
+    fn check(&self) -> Result<(), AiError> {
+        if self.configured() {
+            Ok(())
+        } else {
+            Err(AiError::Config(
+                "azure requires endpoint, api_key and deployment".into(),
+            ))
+        }
+    }
+
+    fn headers(&self) -> Result<HeaderMap, AiError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
+        headers.insert(
+            "api-key",
+            self.cfg
+                .api_key
+                .parse()
+                .map_err(|_| AiError::Config("invalid azure.api_key".into()))?,
+        );
+        Ok(headers)
+    }
+
+    fn url(&self) -> String {
+        format!(
+            "{}/openai/deployments/{}/chat/completions?api-version={}",
+            self.cfg.endpoint.trim_end_matches('/'),
+            self.cfg.deployment,
+            self.cfg.api_version,
+        )
+    }
 }
 
 #[async_trait]
@@ -46,38 +77,29 @@ impl Provider for AzureProvider {
         messages: &[Message],
         on_delta: &mut (dyn FnMut(String) + Send),
     ) -> Result<String, AiError> {
-        if !self.configured() {
-            return Err(AiError::Config(
-                "azure requires endpoint, api_key and deployment".into(),
-            ));
-        }
-
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
-        headers.insert(
-            "api-key",
-            self.cfg
-                .api_key
-                .parse()
-                .map_err(|_| AiError::Config("invalid azure.api_key".into()))?,
-        );
-
-        let url = format!(
-            "{}/openai/deployments/{}/chat/completions?api-version={}",
-            self.cfg.endpoint.trim_end_matches('/'),
-            self.cfg.deployment,
-            self.cfg.api_version,
-        );
-
+        self.check()?;
         // Azure routes by deployment in the URL; the body `model` is ignored but required.
         openai::stream_completions(
             &self.client,
-            &url,
-            headers,
+            &self.url(),
+            self.headers()?,
             &self.cfg.deployment,
             system,
             messages,
             on_delta,
+        )
+        .await
+    }
+
+    async fn complete(&self, system: &str, messages: &[Message]) -> Result<String, AiError> {
+        self.check()?;
+        openai::complete_completions(
+            &self.client,
+            &self.url(),
+            self.headers()?,
+            &self.cfg.deployment,
+            system,
+            messages,
         )
         .await
     }

@@ -43,6 +43,8 @@ struct ChatRequest<'a> {
 struct WireMessage<'a> {
     role: &'a str,
     content: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<&'a str>>,
 }
 
 #[derive(Deserialize)]
@@ -55,6 +57,24 @@ struct StreamMessage {
     content: String,
 }
 
+fn wire_messages<'a>(system: &'a str, messages: &'a [Message]) -> Vec<WireMessage<'a>> {
+    std::iter::once(WireMessage {
+        role: "system",
+        content: system,
+        images: None,
+    })
+    .chain(messages.iter().map(|m| WireMessage {
+        role: m.role.as_str(),
+        content: &m.content,
+        images: if m.images.is_empty() {
+            None
+        } else {
+            Some(m.images.iter().map(String::as_str).collect())
+        },
+    }))
+    .collect()
+}
+
 #[async_trait]
 impl Provider for OllamaProvider {
     async fn chat_stream(
@@ -63,19 +83,9 @@ impl Provider for OllamaProvider {
         messages: &[Message],
         on_delta: &mut (dyn FnMut(String) + Send),
     ) -> Result<String, AiError> {
-        let wire: Vec<WireMessage> = std::iter::once(WireMessage {
-            role: "system",
-            content: system,
-        })
-        .chain(messages.iter().map(|m| WireMessage {
-            role: m.role.as_str(),
-            content: &m.content,
-        }))
-        .collect();
-
         let request = ChatRequest {
             model: &self.cfg.model,
-            messages: wire,
+            messages: wire_messages(system, messages),
             stream: true,
         };
 
@@ -118,6 +128,33 @@ impl Provider for OllamaProvider {
         }
 
         Ok(full)
+    }
+
+    async fn complete(&self, system: &str, messages: &[Message]) -> Result<String, AiError> {
+        let request = ChatRequest {
+            model: &self.cfg.model,
+            messages: wire_messages(system, messages),
+            stream: false,
+        };
+
+        let url = format!("{}/api/chat", self.cfg.url.trim_end_matches('/'));
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| AiError::Request(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(AiError::Status(response.status().as_u16()));
+        }
+
+        let body: StreamChunk = response
+            .json()
+            .await
+            .map_err(|e| AiError::Decode(e.to_string()))?;
+        Ok(body.message.map(|m| m.content).unwrap_or_default())
     }
 
     async fn is_available(&self) -> bool {

@@ -3,6 +3,8 @@
 pub mod config;
 mod intent;
 mod permissions;
+#[cfg(feature = "piper")]
+mod piper;
 mod speaker;
 mod stt;
 mod tts;

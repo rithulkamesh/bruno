@@ -3,7 +3,7 @@ name = "bruno-orb"
 version = "0.1.0"
 edition = "2024"
 description = "Bruno — mood-aware GPU orb renderer"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "bruno_orb"

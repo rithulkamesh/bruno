@@ -11,11 +11,13 @@ use bruno_orb::{FrameParams, Mood, MoodConfig, RendererState, Uniforms};
 use bruno_voice::{Stt, TtsRuntime};
 use crate::hud::HudState;
 use crate::platform::{configure_window, global_cursor_physical, window_center_physical};
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::commands::{orb_mood_to_mood, MoodCommand, SharedGeometry};
@@ -81,7 +83,9 @@ struct OrbApp {
     stt: Arc<Stt>,
     voice_listening: Cell<bool>,
     orb_window_id: Option<WindowId>,
-    modifiers: ModifiersState,
+    /// Kept alive to hold the OS hotkey registration. `None` if registration failed.
+    _hotkey_manager: Option<GlobalHotKeyManager>,
+    hotkey_id: u32,
     capture_rx: std::sync::mpsc::Receiver<
         tokio::sync::oneshot::Sender<Option<bruno_daemon::ScaledScreenshot>>,
     >,
@@ -96,6 +100,30 @@ impl OrbApp {
     fn new(params: OrbParams) -> Self {
         let mood = Mood::Thinking;
         let cfg = mood.config();
+
+        // Global ⌘⇧B to toggle listening from anywhere (the orb is an accessory
+        // window, so a winit key event would only arrive while it's focused).
+        let (hotkey_manager, hotkey_id) = match GlobalHotKeyManager::new() {
+            Ok(manager) => {
+                let hotkey = HotKey::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyB);
+                let id = hotkey.id();
+                match manager.register(hotkey) {
+                    Ok(()) => {
+                        tracing::info!("global hotkey ⌘⇧B registered (toggle voice)");
+                        (Some(manager), id)
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to register global hotkey ⌘⇧B: {e}");
+                        (None, 0)
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("global hotkey manager unavailable: {e}");
+                (None, 0)
+            }
+        };
+
         Self {
             config: OrbConfig::default(),
             gpu: None,
@@ -120,7 +148,8 @@ impl OrbApp {
             stt: params.stt,
             voice_listening: Cell::new(false),
             orb_window_id: None,
-            modifiers: ModifiersState::empty(),
+            _hotkey_manager: hotkey_manager,
+            hotkey_id,
             capture_rx: params.capture_rx,
             capture_state: bruno_daemon::CapturePollState::new(),
             startup: params.startup,
@@ -360,11 +389,6 @@ impl OrbApp {
         );
     }
 
-    fn hotkey_pressed(&self, event: &KeyEvent) -> bool {
-        self.modifiers.super_key()
-            && self.modifiers.shift_key()
-            && matches!(event.logical_key, Key::Character(ref c) if c.eq_ignore_ascii_case("b"))
-    }
 
     fn ensure_gpu(&mut self, _event_loop: &ActiveEventLoop) {
         if matches!(self.gpu, Some(GpuState::Ready(_))) {
@@ -414,6 +438,15 @@ impl ApplicationHandler for OrbApp {
         self.tts_runtime.poll();
         self.hud.poll_commands(&self.geometry);
 
+        // Global hotkey (⌘⇧B) — fires regardless of which app is focused.
+        if self._hotkey_manager.is_some() {
+            while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
+                if ev.id == self.hotkey_id && ev.state == HotKeyState::Pressed {
+                    self.handle_hotkey();
+                }
+            }
+        }
+
         if self.auto_voice_armed && self.startup.is_ready() && self.start.elapsed().as_secs() >= 2 {
             self.auto_voice_armed = false;
             tracing::info!("dev: auto-enabling voice (BRUNO_AUTO_VOICE)");
@@ -438,10 +471,6 @@ impl ApplicationHandler for OrbApp {
         }
 
         match event {
-            WindowEvent::ModifiersChanged(modifiers) => {
-                self.modifiers = modifiers.state();
-            }
-
             WindowEvent::CloseRequested => self.request_exit(),
 
             WindowEvent::MouseInput {
@@ -459,16 +488,9 @@ impl ApplicationHandler for OrbApp {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed =>
             {
-                if self.hotkey_pressed(&event) {
-                    self.handle_hotkey();
-                } else {
-                    match event.logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            self.hud.hide(&self.geometry);
-                            self.voice_enabled.store(false, Ordering::Relaxed);
-                        }
-                        _ => {}
-                    }
+                if let Key::Named(NamedKey::Escape) = event.logical_key {
+                    self.hud.hide(&self.geometry);
+                    self.voice_enabled.store(false, Ordering::Relaxed);
                 }
             }
 

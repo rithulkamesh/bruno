@@ -3,7 +3,7 @@ name = "bruno-daemon"
 version = "0.1.0"
 edition = "2024"
 description = "Bruno screen vision and activity sensing"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "bruno_daemon"
@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 bruno-core = { path = "../bruno-core" }
+bruno-ai = { path = "../bruno-ai" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

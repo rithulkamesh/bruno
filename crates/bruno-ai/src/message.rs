@@ -19,6 +19,9 @@ impl Role {
 pub struct Message {
     pub role: Role,
     pub content: String,
+    /// Base64-encoded JPEG image data attached to this message (for vision
+    /// models). Empty for text-only messages.
+    pub images: Vec<String>,
 }
 
 impl Message {
@@ -26,6 +29,7 @@ impl Message {
         Self {
             role: Role::User,
             content: content.into(),
+            images: Vec::new(),
         }
     }
 
@@ -33,6 +37,16 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            images: Vec::new(),
+        }
+    }
+
+    /// A user message carrying one or more base64 JPEG images (for vision).
+    pub fn user_with_images(content: impl Into<String>, images: Vec<String>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            images,
         }
     }
 }

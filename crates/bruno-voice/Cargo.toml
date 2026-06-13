@@ -3,11 +3,17 @@ name = "bruno-voice"
 version = "0.1.0"
 edition = "2024"
 description = "Bruno macOS STT and TTS"
-license = "MIT"
+license = "GPL-3.0-or-later"
+build = "build.rs"
 
 [lib]
 name = "bruno_voice"
 path = "src/lib.rs"
+
+[features]
+# Piper neural TTS via libpiper (GPL-3.0). Requires a built libpiper install and
+# PIPER_DIR set at build time. See src/piper.rs.
+piper = ["dep:hound"]
 
 [dependencies]
 bruno-core = { path = "../bruno-core" }
@@ -18,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 whisper-rs = "0.14"
 reqwest = { version = "0.12", features = ["blocking"] }
+hound = { version = "3", optional = true }
 
 [dev-dependencies]
 hound = "3"
