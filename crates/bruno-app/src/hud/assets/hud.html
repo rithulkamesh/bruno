@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: transparent;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    color: #e2d9f3;
+    overflow: hidden;
+  }
+  #hud {
+    display: none;
+    flex-direction: column;
+    width: 280px;
+    min-height: 40px;
+    max-height: 200px;
+    padding: 10px 12px;
+    background: rgba(13, 13, 15, 0.92);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    border-radius: 12px;
+  }
+  #hud.visible { display: flex; }
+  #row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    flex: 1;
+    min-height: 0;
+  }
+  #dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #8b5cf6;
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+  #dot.pulse {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.2); }
+  }
+  #text {
+    flex: 1;
+    line-height: 1.4;
+    max-height: 54px;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+  #input-row {
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(139, 92, 246, 0.15);
+  }
+  #input-row.visible { display: block; }
+  #input {
+    width: 100%;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: #e2d9f3;
+    font: inherit;
+    outline: none;
+  }
+</style>
+</head>
+<body>
+  <div id="hud">
+    <div id="row">
+      <div id="dot"></div>
+      <div id="text"></div>
+    </div>
+    <div id="input-row">
+      <input id="input" type="text" placeholder="Talk to Bruno…" />
+    </div>
+  </div>
+  <script>
+    const hud = document.getElementById('hud');
+    const dot = document.getElementById('dot');
+    const text = document.getElementById('text');
+    const inputRow = document.getElementById('input-row');
+    const input = document.getElementById('input');
+
+    window.bruno = {
+      setVisible(v) { hud.classList.toggle('visible', !!v); },
+      setText(t) { text.textContent = t || ''; },
+      setPulsing(v) { dot.classList.toggle('pulse', !!v); },
+      showInput(v) {
+        inputRow.classList.toggle('visible', !!v);
+        if (v) input.focus();
+      }
+    };
+  </script>
+</body>
+</html>

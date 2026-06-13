@@ -1,0 +1,434 @@
+//! Event wiring: daemon/voice → mood, HUD, AI.
+
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use bruno_core::{ActivityEvent, BrunoBus, Intent, OrbMood, VoiceEvent};
+use tokio::sync::Mutex as AsyncMutex;
+use tracing::info;
+
+use crate::calendar;
+use crate::commands::{HudCommand, MoodCommand};
+use bruno_ai::AiClient;
+use bruno_voice::TtsHandle;
+
+pub struct WiringState {
+    pub focus_mode: bool,
+    pub hud_visible: bool,
+    pub voice_active: bool,
+    pub listening: bool,
+    pub enrolling: bool,
+    pub irrelevant_minutes: u64,
+}
+
+impl Default for WiringState {
+    fn default() -> Self {
+        Self {
+            focus_mode: false,
+            hud_visible: false,
+            voice_active: false,
+            listening: false,
+            enrolling: false,
+            irrelevant_minutes: 0,
+        }
+    }
+}
+
+pub async fn run(
+    bus: BrunoBus,
+    hud_tx: Sender<HudCommand>,
+    mood_tx: Sender<MoodCommand>,
+    tts: TtsHandle,
+    state: Arc<Mutex<WiringState>>,
+) {
+    let ai = AsyncMutex::new(AiClient::from_default_config());
+    let mut activity_rx = bus.subscribe_activity();
+    let mut voice_rx = bus.subscribe_voice();
+
+    loop {
+        tokio::select! {
+            result = activity_rx.recv() => {
+                let Ok(event) = result else { continue };
+                handle_activity(&event, &hud_tx, &mood_tx, &tts, &ai, &state).await;
+            }
+            result = voice_rx.recv() => {
+                let Ok(event) = result else { continue };
+                handle_voice(&event, &bus, &hud_tx, &mood_tx, &tts, &ai, &state).await;
+            }
+        }
+    }
+}
+
+async fn handle_activity(
+    event: &ActivityEvent,
+    hud_tx: &Sender<HudCommand>,
+    mood_tx: &Sender<MoodCommand>,
+    tts: &TtsHandle,
+    ai: &AsyncMutex<AiClient>,
+    state: &Arc<Mutex<WiringState>>,
+) {
+    match event {
+        ActivityEvent::IdleStarted { .. } => {
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Sleepy));
+        }
+        ActivityEvent::IdleEnded { duration_secs } => {
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Idle));
+            if let Ok(mut s) = state.lock() {
+                s.irrelevant_minutes = *duration_secs / 60;
+            }
+        }
+        ActivityEvent::IrrelevantContent { reason, .. } => {
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Concerned));
+            show_hud(hud_tx, state);
+            let _ = hud_tx.send(HudCommand::SetText(format!("Still there? {reason}")));
+            schedule_hide(hud_tx.clone(), state.clone(), Duration::from_secs(5));
+
+            let minutes = state.lock().map(|s| s.irrelevant_minutes).unwrap_or(1);
+            let prompt = format!(
+                "I noticed you're off task ({reason}). The user has been inactive on their work context for {minutes} minutes. Nudge them gently."
+            );
+            respond_with_ai(hud_tx, tts, ai, &prompt).await;
+        }
+        ActivityEvent::RelevantContent { .. } => {
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Flow));
+        }
+        ActivityEvent::WindowChanged { .. } => {}
+    }
+}
+
+async fn handle_voice(
+    event: &VoiceEvent,
+    bus: &BrunoBus,
+    hud_tx: &Sender<HudCommand>,
+    mood_tx: &Sender<MoodCommand>,
+    tts: &TtsHandle,
+    ai: &AsyncMutex<AiClient>,
+    state: &Arc<Mutex<WiringState>>,
+) {
+    match event {
+        VoiceEvent::ListeningChanged { enabled } => {
+            if let Ok(mut s) = state.lock() {
+                s.listening = *enabled;
+                s.voice_active = *enabled;
+            }
+            if *enabled {
+                let enrolling = state.lock().map(|s| s.enrolling).unwrap_or(false);
+                if enrolling {
+                    let _ = mood_tx.send(MoodCommand::Set(OrbMood::Loading));
+                    show_hud(hud_tx, state);
+                    let _ = hud_tx.send(HudCommand::SetText(
+                        "Training your voice — say: Hey Bruno".into(),
+                    ));
+                } else {
+                    let _ = mood_tx.send(MoodCommand::Set(OrbMood::Curious));
+                    show_hud(hud_tx, state);
+                    let _ = hud_tx.send(HudCommand::SetText("Listening…".into()));
+                }
+                let _ = hud_tx.send(HudCommand::SetPulsing(true));
+                let _ = hud_tx.send(HudCommand::ShowInput(true));
+            } else {
+                let _ = mood_tx.send(MoodCommand::Set(OrbMood::Idle));
+                let _ = hud_tx.send(HudCommand::SetPulsing(false));
+                hide_hud(hud_tx, state);
+            }
+        }
+        VoiceEvent::PartialTranscript { text } => {
+            if state.lock().map(|s| s.enrolling).unwrap_or(false) {
+                return;
+            }
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Curious));
+            show_hud(hud_tx, state);
+            let _ = hud_tx.send(HudCommand::SetText(text.clone()));
+        }
+        VoiceEvent::UserSpeechStarted => {
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Curious));
+            let _ = hud_tx.send(HudCommand::SetPulsing(true));
+        }
+        VoiceEvent::UserSpeechEnded => {
+            let _ = hud_tx.send(HudCommand::SetPulsing(false));
+            if state.lock().map(|s| s.listening && !s.enrolling).unwrap_or(false) {
+                let _ = mood_tx.send(MoodCommand::Set(OrbMood::Loading));
+                let _ = hud_tx.send(HudCommand::SetText("Thinking…".into()));
+            }
+        }
+        VoiceEvent::PermissionDenied => {
+            show_hud(hud_tx, state);
+            let _ = hud_tx.send(HudCommand::SetText(
+                "Enable microphone and speech recognition in System Settings.".into(),
+            ));
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Concerned));
+        }
+        VoiceEvent::SpeakerRejected { .. } => {
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Concerned));
+            schedule_mood_reset(mood_tx.clone(), Duration::from_millis(600));
+        }
+        VoiceEvent::EnrollmentProgress { step, total } => {
+            if let Ok(mut s) = state.lock() {
+                s.enrolling = true;
+            }
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Loading));
+            show_hud(hud_tx, state);
+            let _ = hud_tx.send(HudCommand::SetText(format!(
+                "Training your voice ({step}/{total}) — say: Hey Bruno"
+            )));
+        }
+        VoiceEvent::EnrollmentComplete => {
+            if let Ok(mut s) = state.lock() {
+                s.enrolling = false;
+            }
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Curious));
+            let msg = "Got it. I learned your voice.";
+            let _ = hud_tx.send(HudCommand::SetText(msg.into()));
+            tts.speak(msg);
+        }
+        VoiceEvent::BrunoSpeakingStarted => {
+            let _ = mood_tx.send(MoodCommand::Set(OrbMood::Flow));
+            let _ = hud_tx.send(HudCommand::SetPulsing(true));
+        }
+        VoiceEvent::BrunoSpeakingFinished => {
+            let listening = state.lock().map(|s| s.listening).unwrap_or(false);
+            if listening {
+                let _ = mood_tx.send(MoodCommand::Set(OrbMood::Curious));
+                let _ = hud_tx.send(HudCommand::SetText("Listening…".into()));
+            } else {
+                let _ = mood_tx.send(MoodCommand::Set(OrbMood::Idle));
+            }
+            let _ = hud_tx.send(HudCommand::SetPulsing(listening));
+            schedule_hide(hud_tx.clone(), state.clone(), Duration::from_secs(3));
+        }
+        VoiceEvent::Utterance { text } => {
+            let lower = text.to_lowercase();
+            if lower.contains("go away") || lower.contains("hide") || lower.contains("snooze") {
+                hide_hud(hud_tx, state);
+                return;
+            }
+        }
+        VoiceEvent::IntentDetected(intent) => {
+            if matches!(intent, Intent::Ignored) {
+                return;
+            }
+
+            show_hud(hud_tx, state);
+            if let Ok(mut s) = state.lock() {
+                s.voice_active = true;
+            }
+            let _ = hud_tx.send(HudCommand::ShowInput(true));
+
+            match intent {
+                Intent::Ignored => {}
+                Intent::EnrollVoice | Intent::ForgetVoice => {
+                    if matches!(intent, Intent::ForgetVoice) {
+                        let msg = "Voice profile cleared.";
+                        let _ = hud_tx.send(HudCommand::SetText(msg.into()));
+                        tts.speak(msg);
+                    }
+                }
+                Intent::HearingCheck => {
+                    let msg = "Yes, I can hear you.";
+                    let _ = hud_tx.send(HudCommand::SetText(msg.to_string()));
+                    tts.speak(msg);
+                }
+                Intent::Greeting => {
+                    let msg = greeting_reply();
+                    let _ = hud_tx.send(HudCommand::SetText(msg.to_string()));
+                    tts.speak(msg);
+                }
+                Intent::EnterFocus => {
+                    if let Ok(mut s) = state.lock() {
+                        s.focus_mode = true;
+                    }
+                    let _ = mood_tx.send(MoodCommand::Set(OrbMood::Flow));
+                    hide_hud(hud_tx, state);
+                }
+                Intent::WhereWasI => {
+                    respond_with_ai(
+                        hud_tx,
+                        tts,
+                        ai,
+                        "The user asked where they were. Briefly summarize what they were likely working on based on context.",
+                    )
+                    .await;
+                }
+                Intent::Calendar => {
+                    let summary = calendar::today_summary();
+                    let _ = hud_tx.send(HudCommand::SetText(summary.clone()));
+                    tts.speak(&summary);
+                }
+                Intent::Command { action } => {
+                    respond_with_ai(
+                        hud_tx,
+                        tts,
+                        ai,
+                        &format!(
+                            "The user gave a voice command: {action}. Respond briefly with what you would do or ask one clarifying question."
+                        ),
+                    )
+                    .await;
+                }
+                Intent::Research { query } => {
+                    respond_with_ai(hud_tx, tts, ai, query).await;
+                }
+                Intent::Break => {
+                    let msg = "Step away for a few minutes. I'll be here.";
+                    let _ = hud_tx.send(HudCommand::SetText(msg.to_string()));
+                    tts.speak(msg);
+                }
+                Intent::NextTask => {
+                    respond_with_ai(
+                        hud_tx,
+                        tts,
+                        ai,
+                        "The user asked what to work on next. Suggest one small concrete next step.",
+                    )
+                    .await;
+                }
+                Intent::Converse { text } => {
+                    respond_with_ai(hud_tx, tts, ai, text).await;
+                }
+            }
+
+            schedule_hide(hud_tx.clone(), state.clone(), Duration::from_secs(2));
+            let _ = bus;
+        }
+    }
+}
+
+fn schedule_mood_reset(mood_tx: Sender<MoodCommand>, delay: Duration) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let _ = mood_tx.send(MoodCommand::Set(OrbMood::Curious));
+    });
+}
+
+fn show_hud(hud_tx: &Sender<HudCommand>, state: &std::sync::Arc<Mutex<WiringState>>) {
+    if state.lock().map(|s| s.focus_mode).unwrap_or(false) {
+        return;
+    }
+    if let Ok(mut s) = state.lock() {
+        s.hud_visible = true;
+    }
+    let _ = hud_tx.send(HudCommand::Show);
+}
+
+fn hide_hud(hud_tx: &Sender<HudCommand>, state: &std::sync::Arc<Mutex<WiringState>>) {
+    if let Ok(mut s) = state.lock() {
+        s.hud_visible = false;
+        s.voice_active = false;
+        s.listening = false;
+    }
+    let _ = hud_tx.send(HudCommand::Hide);
+    let _ = hud_tx.send(HudCommand::ShowInput(false));
+}
+
+fn schedule_hide(
+    hud_tx: Sender<HudCommand>,
+    state: std::sync::Arc<Mutex<WiringState>>,
+    delay: Duration,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        if state.lock().map(|s| s.voice_active || s.listening).unwrap_or(false) {
+            return;
+        }
+        if let Ok(mut s) = state.lock() {
+            if !s.hud_visible {
+                return;
+            }
+            s.hud_visible = false;
+        }
+        let _ = hud_tx.send(HudCommand::Hide);
+        let _ = hud_tx.send(HudCommand::ShowInput(false));
+    });
+}
+
+async fn respond_with_ai(
+    hud_tx: &Sender<HudCommand>,
+    tts: &TtsHandle,
+    ai: &AsyncMutex<AiClient>,
+    user_message: &str,
+) {
+    let _ = hud_tx.send(HudCommand::SetText("Thinking…".into()));
+
+    let available = tokio::time::timeout(Duration::from_secs(2), async {
+        ai.lock().await.is_available().await
+    })
+    .await
+    .unwrap_or(false);
+
+    if !available {
+        let msg = "I'm offline.";
+        let _ = hud_tx.send(HudCommand::SetText(msg.to_string()));
+        tts.speak(msg);
+        return;
+    }
+
+    let hud = hud_tx.clone();
+    let user = user_message.to_string();
+    let result = tokio::time::timeout(
+        Duration::from_secs(20),
+        async {
+            ai
+                .lock()
+                .await
+                .chat_stream(&user, |full| {
+                    let _ = hud.send(HudCommand::SetText(full.to_string()));
+                })
+                .await
+        },
+    )
+    .await;
+
+    match result {
+        Ok(Ok(text)) => {
+            if !text.is_empty() {
+                tts.speak(&text);
+            }
+        }
+        Ok(Err(_)) | Err(_) => {
+            let msg = "I'm offline.";
+            let _ = hud_tx.send(HudCommand::SetText(msg.to_string()));
+            tts.speak(msg);
+        }
+    }
+}
+
+fn greeting_reply() -> &'static str {
+    const REPLIES: &[&str] = &[
+        "Doing well. You?",
+        "All good here.",
+        "I'm here. What's up?",
+    ];
+    let idx = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as usize)
+        .unwrap_or(0)
+        % REPLIES.len();
+    REPLIES[idx]
+}
+
+pub fn handle_hotkey(
+    hud_tx: &Sender<HudCommand>,
+    voice_enabled: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    state: &std::sync::Arc<Mutex<WiringState>>,
+    voice_on: bool,
+) {
+    info!("hotkey: toggle voice");
+    if state.lock().map(|s| s.focus_mode).unwrap_or(false) {
+        return;
+    }
+    voice_enabled.store(voice_on, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut s) = state.lock() {
+        s.voice_active = voice_on;
+        s.listening = voice_on;
+        if voice_on {
+            s.hud_visible = true;
+            let _ = hud_tx.send(HudCommand::Show);
+            let _ = hud_tx.send(HudCommand::SetText("Starting voice…".into()));
+            let _ = hud_tx.send(HudCommand::ShowInput(true));
+        } else {
+            s.hud_visible = false;
+            let _ = hud_tx.send(HudCommand::Hide);
+            let _ = hud_tx.send(HudCommand::ShowInput(false));
+        }
+    }
+}

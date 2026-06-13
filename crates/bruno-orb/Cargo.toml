@@ -1,0 +1,27 @@
+[package]
+name = "bruno-orb"
+version = "0.1.0"
+edition = "2024"
+description = "Bruno — mood-aware GPU orb renderer"
+license = "MIT"
+
+[lib]
+name = "bruno_orb"
+path = "src/lib.rs"
+
+[dependencies]
+wgpu = "29.0.3"
+winit = "0.30.13"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.3"
+
+[[example]]
+name = "app"
+path = "examples/app/main.rs"
+
+# Used by `examples/app` for macOS Spaces / floating window (not linked into the lib).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5.2"
+objc2-app-kit = { version = "0.2.2", features = ["NSView", "NSWindow", "NSEvent"] }
+raw-window-handle = "0.6"
+core-graphics = "0.24"

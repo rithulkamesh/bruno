@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/bruno-app",
+    "crates/bruno-core",
+    "crates/bruno-daemon",
+    "crates/bruno-ai",
+    "crates/bruno-orb",
+    "crates/bruno-voice",
+]
+
