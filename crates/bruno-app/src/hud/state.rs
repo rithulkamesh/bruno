@@ -12,7 +12,7 @@ const LABEL_PAD: f64 = 8.0;
 mod native {
     use super::{LABEL_H, LABEL_PAD, LABEL_W};
     use objc2::MainThreadMarker;
-    use objc2::MainThreadOnly;
+    
     use objc2::rc::Retained;
     use objc2_app_kit::{NSColor, NSFont, NSTextField, NSView, NSWindow};
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
