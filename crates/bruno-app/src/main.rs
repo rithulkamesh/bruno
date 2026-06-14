@@ -1,3 +1,4 @@
+mod browser;
 mod calendar;
 mod commands;
 mod hud;
@@ -43,6 +44,11 @@ fn main() {
 
     rt.spawn(bruno_daemon::run(bus.clone(), capture, startup.clone()));
 
+    // Headless in-app browser: handle goes to the agent (worker thread), the
+    // receiver drives a WKWebView on the main thread (in orb_window).
+    let (browser_handle, browser_rx) = browser::channel();
+    let browser: Arc<dyn bruno_ai::Browser> = Arc::new(browser_handle);
+
     let hud_tx_w = hud_tx.clone();
     let mood_tx_w = mood_tx.clone();
     let state_w = wiring_state.clone();
@@ -52,6 +58,7 @@ fn main() {
         mood_tx_w,
         tts,
         state_w,
+        browser,
     ));
 
     // Single winit event loop on the main thread (required on macOS).
@@ -66,5 +73,6 @@ fn main() {
         stt,
         capture_rx,
         startup,
+        browser_rx,
     });
 }

@@ -4,20 +4,34 @@ use winit::window::Window;
 
 use crate::commands::{HudCommand, SharedGeometry};
 
-const LABEL_W: f64 = 224.0;
-const LABEL_H: f64 = 44.0;
-const LABEL_PAD: f64 = 8.0;
+/// Preferred text column width; clamped to the window if narrower.
+const TEXT_W: f64 = 360.0;
+/// Horizontal / vertical padding inside the glass panel.
+const PAD_X: f64 = 20.0;
+const PAD_Y: f64 = 14.0;
+/// Gap from the top edge of the content view.
+const TOP_PAD: f64 = 10.0;
+/// Side margin so the panel never touches the window edges.
+const SIDE_MARGIN: f64 = 16.0;
+const CORNER_RADIUS: f64 = 20.0;
+const FONT_SIZE: f64 = 15.0;
 
 #[cfg(target_os = "macos")]
 mod native {
-    use super::{LABEL_H, LABEL_PAD, LABEL_W};
+    use super::{CORNER_RADIUS, FONT_SIZE, PAD_X, PAD_Y, SIDE_MARGIN, TEXT_W, TOP_PAD};
     use objc2::MainThreadMarker;
-    
+
     use objc2::rc::Retained;
-    use objc2_app_kit::{NSColor, NSFont, NSTextField, NSView, NSWindow};
+    use objc2_app_kit::{
+        NSColor, NSFont, NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode,
+        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
+    };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
+    /// A frosted-glass HUD panel (NSVisualEffectView) with a wrapping label.
     pub struct HudOverlay {
+        content: Retained<NSView>,
+        panel: Retained<NSVisualEffectView>,
         label: Retained<NSTextField>,
     }
 
@@ -27,56 +41,85 @@ mod native {
             let content = window
                 .contentView()
                 .expect("orb window must have a content view");
-            let bounds = content.bounds();
-            let frame = NSRect::new(
-                NSPoint::new(
-                    (bounds.size.width - LABEL_W) * 0.5,
-                    bounds.size.height - LABEL_H - LABEL_PAD,
-                ),
-                NSSize::new(LABEL_W, LABEL_H),
-            );
 
-            let label = NSTextField::new(mtm);
-            label.setFrame(frame);
+            // Frosted glass background that blurs the desktop behind the window.
+            let panel = NSVisualEffectView::new(mtm);
+            panel.setMaterial(NSVisualEffectMaterial::HUDWindow);
+            panel.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+            panel.setState(NSVisualEffectState::Active);
+            panel.setEmphasized(true);
+            panel.setWantsLayer(true);
+            if let Some(layer) = panel.layer() {
+                layer.setCornerRadius(CORNER_RADIUS);
+                layer.setMasksToBounds(true);
+            }
+            panel.setHidden(true);
+
+            // Wrapping, multi-line label.
+            let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
             label.setEditable(false);
             label.setSelectable(false);
             label.setBezeled(false);
-            label.setDrawsBackground(true);
-            label.setBackgroundColor(Some(&NSColor::colorWithCalibratedWhite_alpha(
-                0.08, 0.92,
-            )));
-            label.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
-                0.89, 0.85, 0.95, 1.0,
-            )));
-            label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
-            label.setStringValue(&NSString::from_str(""));
-            label.setHidden(true);
-            content.addSubview(&label);
-            Self { label }
+            label.setDrawsBackground(false);
+            label.setUsesSingleLineMode(false);
+            label.setMaximumNumberOfLines(0);
+            label.setAlignment(NSTextAlignment::Center);
+            label.setTextColor(Some(&NSColor::colorWithCalibratedWhite_alpha(0.96, 1.0)));
+            label.setFont(Some(&NSFont::systemFontOfSize(FONT_SIZE)));
+
+            panel.addSubview(&label);
+            content.addSubview(&panel);
+
+            let overlay = Self {
+                content,
+                panel,
+                label,
+            };
+            overlay.relayout();
+            overlay
         }
 
-        pub fn relayout(&self, content: &NSView) {
-            let bounds = content.bounds();
-            let frame = NSRect::new(
-                NSPoint::new(
-                    (bounds.size.width - LABEL_W) * 0.5,
-                    bounds.size.height - LABEL_H - LABEL_PAD,
-                ),
-                NSSize::new(LABEL_W, LABEL_H),
-            );
-            self.label.setFrame(frame);
+        /// Recompute panel + label frames to fit the current text, bottom-anchored
+        /// near the top of the content view (matching the orb HUD position).
+        fn relayout(&self) {
+            let bounds = self.content.bounds();
+            let text_w = TEXT_W.min(bounds.size.width - 2.0 * (SIDE_MARGIN + PAD_X));
+            let text_w = text_w.max(120.0);
+
+            self.label.setPreferredMaxLayoutWidth(text_w);
+            let fit = self.label.fittingSize();
+            let text_h = fit.height.max(FONT_SIZE * 1.4);
+
+            let panel_w = text_w + 2.0 * PAD_X;
+            let panel_h = text_h + 2.0 * PAD_Y;
+            let panel_x = (bounds.size.width - panel_w) * 0.5;
+            let panel_y = bounds.size.height - panel_h - TOP_PAD;
+
+            self.panel.setFrame(NSRect::new(
+                NSPoint::new(panel_x, panel_y),
+                NSSize::new(panel_w, panel_h),
+            ));
+            self.label.setFrame(NSRect::new(
+                NSPoint::new(PAD_X, PAD_Y),
+                NSSize::new(text_w, text_h),
+            ));
+        }
+
+        pub fn relayout_in(&self, _content: &NSView) {
+            self.relayout();
         }
 
         pub fn set_text(&self, text: &str) {
             self.label.setStringValue(&NSString::from_str(text));
+            self.relayout();
         }
 
         pub fn show(&self) {
-            self.label.setHidden(false);
+            self.panel.setHidden(false);
         }
 
         pub fn hide(&self) {
-            self.label.setHidden(true);
+            self.panel.setHidden(true);
         }
     }
 }
@@ -142,7 +185,7 @@ impl HudState {
             (&self.overlay, crate::platform::ns_window_from(orb))
         {
             if let Some(content) = ns_window.contentView() {
-                overlay.relayout(&content);
+                overlay.relayout_in(&content);
             }
         }
         #[cfg(not(target_os = "macos"))]

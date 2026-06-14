@@ -57,6 +57,7 @@ pub struct OrbParams {
         tokio::sync::oneshot::Sender<Option<bruno_daemon::ScaledScreenshot>>,
     >,
     pub startup: Arc<StartupGate>,
+    pub browser_rx: std::sync::mpsc::Receiver<crate::browser::Job>,
 }
 
 struct OrbApp {
@@ -94,6 +95,10 @@ struct OrbApp {
     ui_marked: bool,
     services_ready: bool,
     auto_voice_armed: bool,
+    #[allow(dead_code)]
+    browser_rx: Option<std::sync::mpsc::Receiver<crate::browser::Job>>,
+    #[cfg(target_os = "macos")]
+    browser: Option<crate::browser::Driver>,
 }
 
 impl OrbApp {
@@ -156,6 +161,9 @@ impl OrbApp {
             ui_marked: false,
             services_ready: false,
             auto_voice_armed: std::env::var("BRUNO_AUTO_VOICE").is_ok(),
+            browser_rx: Some(params.browser_rx),
+            #[cfg(target_os = "macos")]
+            browser: None,
         }
     }
 
@@ -437,6 +445,21 @@ impl ApplicationHandler for OrbApp {
         }
         self.tts_runtime.poll();
         self.hud.poll_commands(&self.geometry);
+
+        // Headless browser for the agent (main-thread WKWebView).
+        #[cfg(target_os = "macos")]
+        {
+            if self.browser.is_none() {
+                if let (Some(rx), Some(mtm)) =
+                    (self.browser_rx.take(), objc2::MainThreadMarker::new())
+                {
+                    self.browser = Some(crate::browser::Driver::new(rx, mtm));
+                }
+            }
+            if let Some(browser) = self.browser.as_mut() {
+                browser.pump();
+            }
+        }
 
         // Global hotkey (⌘⇧B) — fires regardless of which app is focused.
         if self._hotkey_manager.is_some() {

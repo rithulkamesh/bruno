@@ -1,7 +1,7 @@
 //! Event wiring: daemon/voice → mood, HUD, AI.
 
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use bruno_core::{ActivityEvent, BrunoBus, Intent, OrbMood, VoiceEvent};
 use tokio::sync::Mutex as AsyncMutex;
@@ -11,6 +11,10 @@ use crate::calendar;
 use crate::commands::{HudCommand, MoodCommand};
 use bruno_ai::AiClient;
 use bruno_voice::TtsHandle;
+
+/// Process-wide tool-using agent, initialized in [`run`]. `Some(None)` means the
+/// provider has no agent support; the response path falls back to plain chat.
+static AGENT: OnceLock<Option<Arc<bruno_ai::Agent>>> = OnceLock::new();
 
 pub struct WiringState {
     pub focus_mode: bool,
@@ -40,8 +44,30 @@ pub async fn run(
     mood_tx: Sender<MoodCommand>,
     tts: TtsHandle,
     state: Arc<Mutex<WiringState>>,
+    browser: Arc<dyn bruno_ai::Browser>,
 ) {
     let ai = AsyncMutex::new(AiClient::from_default_config());
+    // The tool-using agent (RAG + web). None for providers without agent support.
+    let browser_for_test = browser.clone();
+    let agent = bruno_ai::Agent::from_config(&bruno_ai::Config::load())
+        .map(|a| a.with_browser(browser))
+        .map(Arc::new);
+    let _ = AGENT.set(agent);
+
+    // Optional: verify the headless WKWebView end-to-end (BRUNO_BROWSER_TEST=1).
+    if std::env::var("BRUNO_BROWSER_TEST").is_ok() {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            match browser_for_test.fetch("https://example.com").await {
+                Ok(t) => tracing::info!(len = t.len(), preview = %t.chars().take(80).collect::<String>(), "browser fetch test"),
+                Err(e) => tracing::warn!("browser fetch test failed: {e}"),
+            }
+            match browser_for_test.search("rust programming language").await {
+                Ok(t) => tracing::info!(len = t.len(), preview = %t.chars().take(140).collect::<String>(), "browser search test"),
+                Err(e) => tracing::warn!("browser search test failed: {e}"),
+            }
+        });
+    }
     let mut activity_rx = bus.subscribe_activity();
     let mut voice_rx = bus.subscribe_voice();
 
@@ -348,6 +374,22 @@ async fn respond_with_ai(
     user_message: &str,
 ) {
     let _ = hud_tx.send(HudCommand::SetText("Thinking…".into()));
+
+    // Prefer the tool-using agent (RAG + web). It can take longer (web fetches),
+    // so give it a generous timeout; fall back to plain chat on any failure.
+    if let Some(Some(agent)) = AGENT.get() {
+        let result =
+            tokio::time::timeout(Duration::from_secs(90), agent.run(user_message)).await;
+        if let Ok(Ok(text)) = result {
+            let text = text.trim();
+            if !text.is_empty() {
+                let _ = hud_tx.send(HudCommand::SetText(text.to_string()));
+                tts.speak(text);
+                return;
+            }
+        }
+        // else: fall through to plain chat below.
+    }
 
     let available = tokio::time::timeout(Duration::from_secs(2), async {
         ai.lock().await.is_available().await
