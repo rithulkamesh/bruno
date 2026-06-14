@@ -21,6 +21,9 @@ good company.";
 pub struct Config {
     #[serde(default)]
     pub ai: AiConfig,
+    /// Neurodivergence-aware behaviour: how (and how often) Bruno nudges.
+    #[serde(default)]
+    pub neuro: NeuroConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -178,6 +181,92 @@ impl Default for LMStudioConfig {
 
 fn lmstudio_base_url() -> String {
     "http://localhost:1234/v1".to_string()
+}
+
+/// Neurodivergence-aware nudging, after Deshmukh, *"Toward Neurodivergent-Aware
+/// Productivity"* (CHItaly 2025, doi:10.1145/3750069.3750114): an adaptive,
+/// privacy-first, human-in-the-loop feedback engine. The paper's core finding is
+/// that for ADHD-affected users, *how* and *when* you interrupt matters more than
+/// *that* you interrupt — nudges must be infrequent, shame-free, and respectful of
+/// attention rhythms (hyperfocus, fatigue), with the user always in control.
+///
+/// All state stays on-device; these knobs shape the [`crate`] nudge gate.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NeuroConfig {
+    /// Master switch. When false, Bruno nudges with no adaptive gating.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Communication profile — tunes tone and pacing of every nudge.
+    #[serde(default)]
+    pub profile: NeuroProfile,
+    /// Minimum gap between two nudges (alarm-fatigue guard).
+    #[serde(default = "neuro_cooldown")]
+    pub nudge_cooldown_secs: u64,
+    /// Hard ceiling on nudges within any rolling hour.
+    #[serde(default = "neuro_max_per_hour")]
+    pub max_nudges_per_hour: u32,
+    /// How long "snooze"/"go away"/"taking a break" silences nudges, in minutes.
+    #[serde(default = "neuro_snooze")]
+    pub snooze_minutes: u64,
+    /// Never interrupt while the user is in sustained focus (hyperfocus).
+    #[serde(default = "default_true")]
+    pub hyperfocus_protection: bool,
+    /// Local-time window where nudges are suppressed, `"HH:MM-HH:MM"`. Empty = off.
+    #[serde(default)]
+    pub quiet_hours: String,
+    /// Phrasing style for nudges. Always shame-free; this picks gentle vs. plain.
+    #[serde(default)]
+    pub tone: NudgeTone,
+}
+
+impl Default for NeuroConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            profile: NeuroProfile::default(),
+            nudge_cooldown_secs: neuro_cooldown(),
+            max_nudges_per_hour: neuro_max_per_hour(),
+            snooze_minutes: neuro_snooze(),
+            hyperfocus_protection: true,
+            quiet_hours: String::new(),
+            tone: NudgeTone::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NeuroProfile {
+    /// ADHD-affected: warm, low-pressure, one tiny next step (the paper's focus).
+    #[default]
+    Adhd,
+    /// Autistic: clear, literal, predictable phrasing; no ambiguity or idiom.
+    Autistic,
+    /// Neurotypical / unspecified: neutral, concise.
+    Generic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NudgeTone {
+    /// Soft, reassuring check-in.
+    #[default]
+    Gentle,
+    /// Plain and brief — still non-judgmental, just less cushioning.
+    Direct,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn neuro_cooldown() -> u64 {
+    600
+}
+fn neuro_max_per_hour() -> u32 {
+    4
+}
+fn neuro_snooze() -> u64 {
+    30
 }
 
 impl Config {

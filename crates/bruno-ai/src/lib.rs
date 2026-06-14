@@ -14,7 +14,7 @@ mod client;
 
 pub use agent::{Agent, Browser};
 pub use client::AiClient;
-pub use config::{Config, ProviderKind};
+pub use config::{Config, NeuroConfig, NeuroProfile, NudgeTone, ProviderKind};
 pub use error::AiError;
 pub use message::{Message, Role};
 pub use provider::Provider;

@@ -2,13 +2,14 @@
 
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use bruno_core::{ActivityEvent, BrunoBus, Intent, OrbMood, VoiceEvent};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::info;
 
 use crate::calendar;
 use crate::commands::{HudCommand, MoodCommand};
+use crate::nudge::{NudgePolicy, local_minutes};
 use bruno_ai::AiClient;
 use bruno_voice::TtsHandle;
 
@@ -47,6 +48,9 @@ pub async fn run(
     browser: Arc<dyn bruno_ai::Browser>,
 ) {
     let ai = AsyncMutex::new(AiClient::from_default_config());
+    // Neurodivergence-aware nudge gate (cooldown, hourly cap, snooze, hyperfocus,
+    // quiet hours, adaptive tone). See `crate::nudge` and the cited paper.
+    let nudge = Arc::new(Mutex::new(NudgePolicy::new(bruno_ai::Config::load().neuro)));
     // The tool-using agent (RAG + web). None for providers without agent support.
     let browser_for_test = browser.clone();
     let agent = bruno_ai::Agent::from_config(&bruno_ai::Config::load())
@@ -75,11 +79,11 @@ pub async fn run(
         tokio::select! {
             result = activity_rx.recv() => {
                 let Ok(event) = result else { continue };
-                handle_activity(&event, &hud_tx, &mood_tx, &tts, &ai, &state).await;
+                handle_activity(&event, &hud_tx, &mood_tx, &tts, &ai, &state, &nudge).await;
             }
             result = voice_rx.recv() => {
                 let Ok(event) = result else { continue };
-                handle_voice(&event, &bus, &hud_tx, &mood_tx, &tts, &ai, &state).await;
+                handle_voice(&event, &bus, &hud_tx, &mood_tx, &tts, &ai, &state, &nudge).await;
             }
         }
     }
@@ -92,6 +96,7 @@ async fn handle_activity(
     tts: &TtsHandle,
     ai: &AsyncMutex<AiClient>,
     state: &Arc<Mutex<WiringState>>,
+    nudge: &Arc<Mutex<NudgePolicy>>,
 ) {
     match event {
         ActivityEvent::IdleStarted { .. } => {
@@ -104,19 +109,45 @@ async fn handle_activity(
             }
         }
         ActivityEvent::IrrelevantContent { reason, .. } => {
+            let minutes = state.lock().map(|s| s.irrelevant_minutes).unwrap_or(1);
+
+            // Neurodivergence-aware gate: decide whether interrupting now is kind.
+            // If suppressed, stay completely quiet — no HUD, no voice, no mood
+            // change — so Bruno never nags (the paper's core design implication).
+            let want_clock = nudge.lock().map(|p| p.quiet_hours_enabled()).unwrap_or(false);
+            let lm = if want_clock { local_minutes() } else { None };
+            let decision = nudge
+                .lock()
+                .map(|mut p| p.try_nudge(Instant::now(), lm))
+                .unwrap_or(Ok(()));
+            // The drift broke the focus streak; reset so sustained off-task time
+            // isn't masked by stale hyperfocus protection on the next check.
+            if let Ok(mut p) = nudge.lock() {
+                p.clear_focus();
+            }
+            let prompt = match decision {
+                Ok(()) => nudge
+                    .lock()
+                    .map(|p| p.nudge_instruction(reason, minutes))
+                    .unwrap_or_default(),
+                Err(why) => {
+                    tracing::debug!(?why, %reason, "nudge suppressed");
+                    return;
+                }
+            };
+
             let _ = mood_tx.send(MoodCommand::Set(OrbMood::Concerned));
             show_hud(hud_tx, state);
             let _ = hud_tx.send(HudCommand::SetText(format!("Still there? {reason}")));
             schedule_hide(hud_tx.clone(), state.clone(), Duration::from_secs(5));
-
-            let minutes = state.lock().map(|s| s.irrelevant_minutes).unwrap_or(1);
-            let prompt = format!(
-                "I noticed you're off task ({reason}). The user has been inactive on their work context for {minutes} minutes. Nudge them gently."
-            );
             respond_with_ai(hud_tx, tts, ai, &prompt).await;
         }
         ActivityEvent::RelevantContent { .. } => {
             let _ = mood_tx.send(MoodCommand::Set(OrbMood::Flow));
+            // Sustained relevant work builds hyperfocus protection.
+            if let Ok(mut p) = nudge.lock() {
+                p.note_focus();
+            }
         }
         ActivityEvent::WindowChanged { .. } => {}
     }
@@ -130,6 +161,7 @@ async fn handle_voice(
     tts: &TtsHandle,
     ai: &AsyncMutex<AiClient>,
     state: &Arc<Mutex<WiringState>>,
+    nudge: &Arc<Mutex<NudgePolicy>>,
 ) {
     match event {
         VoiceEvent::ListeningChanged { enabled } => {
@@ -225,6 +257,10 @@ async fn handle_voice(
         VoiceEvent::Utterance { text } => {
             let lower = text.to_lowercase();
             if lower.contains("go away") || lower.contains("hide") || lower.contains("snooze") {
+                // User asked for quiet — honor autonomy and stop nudging for a while.
+                if let Ok(mut p) = nudge.lock() {
+                    p.snooze(Instant::now());
+                }
                 hide_hud(hud_tx, state);
                 return;
             }
@@ -295,6 +331,11 @@ async fn handle_voice(
                     respond_with_ai(hud_tx, tts, ai, query).await;
                 }
                 Intent::Break => {
+                    // Stepping away on purpose isn't drifting — silence nudges so
+                    // Bruno doesn't pester the user about their own break.
+                    if let Ok(mut p) = nudge.lock() {
+                        p.snooze(Instant::now());
+                    }
                     let msg = "Step away for a few minutes. I'll be here.";
                     let _ = hud_tx.send(HudCommand::SetText(msg.to_string()));
                     tts.speak(msg);

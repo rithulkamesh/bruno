@@ -48,7 +48,20 @@ backend = "apple"            # apple | piper
 install_dir = "/path/to/libpiper/install"   # has espeak-ng-data/ + dylibs
 model_path = "/path/to/voice.onnx"
 length_scale = 1.0
+
+[neuro]                      # neurodivergence-aware nudging (all on-device)
+enabled = true
+profile = "adhd"             # adhd | autistic | generic — tunes tone & pacing
+nudge_cooldown_secs = 600    # min gap between nudges (alarm-fatigue guard)
+max_nudges_per_hour = 4      # hard rolling-hour ceiling
+snooze_minutes = 30          # "snooze"/"go away"/"take a break" silence window
+hyperfocus_protection = true # never interrupt sustained focus
+quiet_hours = "22:00-08:00"  # local-time window with no nudges ("" = off)
+tone = "gentle"              # gentle | direct (both shame-free)
 ```
+
+The `[neuro]` defaults are sane, so this whole table is optional — leave it out
+and Bruno still nudges gently, infrequently, and shame-free.
 
 ## Build
 
@@ -90,9 +103,44 @@ local [Veclite](https://crates.io/crates/veclite-db) vector store at
 `~/.config/bruno/memory.vlt` (embeddings via Azure `text-embedding-3-small`).
 So *"pull up research on X"* actually searches, reads, and answers.
 
+## Neurodivergence-aware nudging
+
+Bruno is built for the way ADHD attention actually works, following Deshmukh's
+human-in-the-loop framework (see [Research](#research)). The daemon decides
+*whether* you've drifted; a [nudge policy](crates/bruno-app/src/nudge.rs) decides
+whether interrupting *right now* is actually kind:
+
+- **Non-disruptive** — a cooldown plus an hourly cap stop alarm fatigue. A
+  suppressed nudge is fully silent (no HUD, no voice, no mood flicker).
+- **Respects attention rhythms** — sustained focus (hyperfocus) and quiet hours
+  suppress nudges entirely.
+- **You're in control** — "snooze" / "go away" / "take a break" silences Bruno
+  for a configurable window; `Intent::Break` does too.
+- **Shame-free, adaptive tone** — the spoken nudge adapts to your `profile`
+  (ADHD / autistic / generic) and `tone`, never judging you for drifting.
+
+All of this is in-memory and on-device — no behavioral data leaves your Mac.
+
 ## Controls
 
 - **`⌘⇧B`** — toggle listening (global hotkey, works unfocused)
 - **Click the orb** — toggle listening / HUD
 - **`Esc`** — stop
-- Voice: "enroll my voice" / "forget my voice"
+- Voice: "enroll my voice" / "forget my voice" / "snooze"
+
+## Research
+
+Bruno's nudging design follows:
+
+> Raghavendra Deshmukh. 2025. *Toward Neurodivergent-Aware Productivity: A
+> Systems and AI-Based Human-in-the-Loop Framework for ADHD-Affected
+> Professionals.* In Proceedings of the 16th Biannual Conference of the Italian
+> SIGCHI Chapter (CHItaly 2025). ACM.
+> [doi:10.1145/3750069.3750114](https://doi.org/10.1145/3750069.3750114)
+> ([open-access preprint](https://arxiv.org/abs/2507.06864))
+
+The paper proposes a privacy-first, on-device assistant with three parts —
+behavior sensing, a voice interface, and an adaptive feedback engine — that
+adapts the *tone, timing, and content* of nudges to a user's fluctuating
+attention. Bruno maps those onto `bruno-daemon` (sensing), `bruno-voice` (voice),
+and the `neuro` nudge policy (adaptive feedback).

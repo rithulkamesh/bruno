@@ -2,6 +2,7 @@ mod browser;
 mod calendar;
 mod commands;
 mod hud;
+mod nudge;
 mod orb_config;
 mod orb_window;
 mod platform;
