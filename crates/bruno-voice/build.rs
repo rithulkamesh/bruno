@@ -11,11 +11,11 @@ fn main() {
         return;
     }
 
-    let dir = std::env::var("PIPER_DIR").unwrap_or_default();
+    let dir = piper_dir();
     if dir.is_empty() {
         println!(
-            "cargo:warning=`piper` feature is on but PIPER_DIR is not set; \
-             libpiper will fail to link. Point PIPER_DIR at the libpiper install prefix."
+            "cargo:warning=`piper` feature is on but PIPER_DIR is not set and no \
+             default install was found; libpiper will fail to link."
         );
         return;
     }
@@ -29,4 +29,24 @@ fn main() {
     // Embed runtime search paths so the dylibs resolve without DYLD_LIBRARY_PATH.
     println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}/lib");
+}
+
+/// `PIPER_DIR`, or the conventional install at `~/.config/bruno/piper`.
+fn piper_dir() -> String {
+    if let Ok(dir) = std::env::var("PIPER_DIR") {
+        if !dir.is_empty() {
+            return dir;
+        }
+    }
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => {
+            let p = format!("{home}/.config/bruno/piper");
+            if std::path::Path::new(&p).exists() {
+                p
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
+    }
 }

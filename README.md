@@ -1,8 +1,13 @@
 # Bruno
 
+[![CI](https://github.com/rithulkamesh/bruno/actions/workflows/ci.yml/badge.svg)](https://github.com/rithulkamesh/bruno/actions/workflows/ci.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
+
 A calm, minimal **desktop companion** for macOS — a floating orb that watches your
 screen, notices when you drift off-task, and talks to you. Local-first voice in
-and out, pluggable LLM providers, on-device speech recognition.
+and out, pluggable LLM providers, on-device speech recognition, and a tool-using
+agent with web browsing and Veclite-backed RAG memory.
 
 > ⚠️ **License: GPL-3.0-or-later.** Bruno can link [Piper](https://github.com/OHF-Voice/piper1-gpl)
 > (and espeak-ng) for neural TTS, which are GPL-3.0.
@@ -48,24 +53,42 @@ length_scale = 1.0
 ## Build
 
 ```sh
-cargo build --workspace          # default: whisper STT + Apple TTS
+cargo build --workspace      # default: whisper STT + Apple TTS, no native deps
+cargo run -p bruno-app       # or: just run-lite
 ```
+
+Needs macOS, a recent Xcode/Command Line Tools, and `cmake` (for whisper.cpp).
+No API keys or extra setup required for the default build.
 
 ### Optional: Piper neural TTS (GPL)
 
-1. Build libpiper (its cmake downloads espeak-ng + onnxruntime):
-   ```sh
-   git clone https://github.com/OHF-Voice/piper1-gpl
-   cd piper1-gpl/libpiper
-   cmake -Bbuild -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/install
-   cmake --build build && cmake --install build
-   ```
-2. Build Bruno against it and select the backend:
-   ```sh
-   PIPER_DIR=/abs/path/piper1-gpl/libpiper/install \
-     cargo build -p bruno-app --features bruno-voice/piper
-   ```
-3. Set `[tts] backend = "piper"` + `[tts.piper]` paths in config.
+Piper is opt-in (it links a native `libpiper`). Build it once into the path
+Bruno looks for:
+
+```sh
+git clone https://github.com/OHF-Voice/piper1-gpl
+cd piper1-gpl/libpiper
+cmake -Bbuild -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.config/bruno/piper"
+cmake --build build && cmake --install build
+```
+
+Then run with the feature (set `[tts] backend = "piper"` in config first):
+
+```sh
+just run                     # = cargo run -p bruno-app --features piper
+```
+
+The build auto-discovers libpiper at `~/.config/bruno/piper`; override with
+`PIPER_DIR`.
+
+## Agent & memory
+
+Bruno's conversational replies go through a tool-using agent (Azure/OpenAI
+function-calling). It can **search the web** and **read pages** via a headless
+in-app `WKWebView` (no window, full JS), and **remember/recall** facts in a
+local [Veclite](https://crates.io/crates/veclite-db) vector store at
+`~/.config/bruno/memory.vlt` (embeddings via Azure `text-embedding-3-small`).
+So *"pull up research on X"* actually searches, reads, and answers.
 
 ## Controls
 

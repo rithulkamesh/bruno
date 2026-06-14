@@ -1,12 +1,6 @@
 [build]
 rustflags = ["-C", "link-arg=-mmacosx-version-min=14.0"]
 
-# bruno-app enables Piper TTS by default; libpiper is linked from here and its
-# rpath is baked into the binary. Override by exporting PIPER_DIR, or build with
-# `cargo build -p bruno-app --no-default-features` to drop Piper entirely.
-[env]
-PIPER_DIR = "/Users/rkamesh/.config/bruno/piper"
-
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "link-arg=-mmacosx-version-min=14.0"]
 
