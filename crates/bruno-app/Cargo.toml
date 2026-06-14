@@ -10,6 +10,12 @@ build = "build.rs"
 name = "bruno"
 path = "src/main.rs"
 
+[features]
+# Piper neural TTS is on by default. Build with `--no-default-features` to drop
+# it (and the libpiper link requirement). Needs PIPER_DIR set — see .cargo/config.toml.
+default = ["piper"]
+piper = ["bruno-voice/piper"]
+
 [dependencies]
 bruno-core = { path = "../bruno-core" }
 bruno-ai = { path = "../bruno-ai" }

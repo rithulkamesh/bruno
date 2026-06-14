@@ -10,7 +10,6 @@ use std::path::PathBuf;
 pub use profile::VoiceProfile;
 
 pub const ENROLL_SAMPLES: u8 = 3;
-pub const VERIFY_THRESHOLD: f32 = 0.72;
 const MAX_AUDIO_SECS: f32 = 1.2;
 
 #[cfg(target_os = "macos")]

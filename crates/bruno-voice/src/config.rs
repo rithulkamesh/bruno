@@ -20,6 +20,13 @@ pub struct SttConfig {
     pub backend: SttBackend,
     #[serde(default)]
     pub whisper: WhisperConfig,
+    /// Gate utterances behind speaker verification (only accept the enrolled
+    /// voice). The built-in embedding is weak, so this defaults to off.
+    #[serde(default)]
+    pub speaker_verification: bool,
+    /// Cosine-similarity threshold for speaker verification when enabled.
+    #[serde(default = "default_speaker_threshold")]
+    pub speaker_threshold: f32,
 }
 
 impl Default for SttConfig {
@@ -27,8 +34,14 @@ impl Default for SttConfig {
         Self {
             backend: SttBackend::default(),
             whisper: WhisperConfig::default(),
+            speaker_verification: false,
+            speaker_threshold: default_speaker_threshold(),
         }
     }
+}
+
+fn default_speaker_threshold() -> f32 {
+    0.5
 }
 
 /// Which speech recogniser to use.

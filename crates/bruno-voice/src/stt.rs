@@ -52,6 +52,10 @@ struct SttInner {
     speaker: SpeakerGate,
     enrolling: bool,
     enroll_step: u8,
+    /// Whether to gate utterances behind speaker verification.
+    verify_speaker: bool,
+    /// Cosine-similarity threshold for verification.
+    verify_threshold: f32,
     /// Present when the whisper backend is active; used for the final, full-buffer
     /// transcription in [`finalize_utterance`].
     whisper: Option<Arc<WhisperEngine>>,
@@ -121,9 +125,10 @@ fn finalize_utterance(stt: &mut SttInner) {
         return;
     }
 
-    if stt.speaker.has_profile() {
+    if stt.verify_speaker && stt.speaker.has_profile() {
+        let threshold = stt.verify_threshold;
         match stt.speaker.verify(&stt.audio_buffer, stt.device_sample_rate) {
-            Ok(score) if score >= speaker::VERIFY_THRESHOLD => {
+            Ok(score) if score >= threshold => {
                 tracing::debug!(score, "speaker verified");
             }
             Ok(score) => {
@@ -684,6 +689,8 @@ impl Stt {
             speaker: SpeakerGate::new(),
             enrolling: false,
             enroll_step: 0,
+            verify_speaker: config.speaker_verification,
+            verify_threshold: config.speaker_threshold,
             whisper: None,
         }));
 
@@ -712,6 +719,7 @@ impl Stt {
             whisper_status.store(WHISPER_FAILED, Ordering::Relaxed);
         }
 
+        let force_enroll = config.speaker_verification;
         let stt = Self {
             inner: inner.clone(),
             engine: Mutex::new(None),
@@ -724,11 +732,14 @@ impl Stt {
         };
         stt.spawn_silence_detector();
 
-        if let Ok(mut stt) = inner.lock() {
-            if !stt.speaker.has_profile() {
-                stt.enrolling = true;
-                stt.enroll_step = 0;
-                stt.speaker.reset_enrollment();
+        // Only force enrollment when verification is actually enabled.
+        if force_enroll {
+            if let Ok(mut stt) = inner.lock() {
+                if !stt.speaker.has_profile() {
+                    stt.enrolling = true;
+                    stt.enroll_step = 0;
+                    stt.speaker.reset_enrollment();
+                }
             }
         }
 
